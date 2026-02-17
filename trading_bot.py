@@ -123,12 +123,37 @@ if run_btn:
     st.subheader("🔮 SMART MONEY TREND MATRIX")
     res_df = pd.DataFrame(matrix_rows)
     
+    # 1. Styling voor de trend-pijltjes
     def style_pijltjes(val):
         if val == "▲": return 'color: #76FF03; font-weight: bold; text-align: center;'
         if val == "▼": return 'color: #FF1744; font-weight: bold; text-align: center;'
         return 'color: #FFB627; text-align: center;'
 
-    st.dataframe(res_df.style.applymap(style_pijltjes, subset=['1M','5M','15M','30M','1H','4H','1D']), use_container_width=True)
+    # 2. Styling voor de Strength (Groene rand boven 70)
+    def style_strength(row):
+        # Haal het getal uit de string
+        try:
+            val = int(row['STR'])
+            if val >= 70:
+                return ['border: 2px solid #76FF03; border-radius: 5px; color: #76FF03; font-weight: bold; text-align: center;'] * len(row)
+            elif val <= -70:
+                return ['border: 2px solid #FF1744; border-radius: 5px; color: #FF1744; font-weight: bold; text-align: center;'] * len(row)
+        except:
+            pass
+        return ['text-align: center;'] * len(row)
+
+    # We passen de styling toe
+    styled_df = res_df.style.applymap(style_pijltjes, subset=['1M','5M','15M','30M','1H','4H','1D']) \
+                            .apply(lambda x: [
+                                'border: 2px solid #76FF03; color: #76FF03; font-weight: bold; text-align: center;' 
+                                if (col == 'STR' and int(x['STR']) >= 70) else 
+                                ('border: 2px solid #FF1744; color: #FF1744; font-weight: bold; text-align: center;' 
+                                 if (col == 'STR' and int(x['STR']) <= -70) else 'text-align: center;') 
+                                for col in x.index
+                            ], axis=1)
+
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
 
 
 
