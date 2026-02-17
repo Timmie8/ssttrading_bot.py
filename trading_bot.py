@@ -3,103 +3,69 @@ import pandas as pd
 import requests
 import time
 
-# --- PAGINA CONFIGURATIE ---
-st.set_page_config(page_title="SST AI QUANT TERMINAL", layout="wide")
+st.set_page_config(page_title="SST AI QUANT", layout="wide")
 
-st.markdown("""
-    <style>
-    .main { background-color: #050816; color: white; }
-    .stMetric { background-color: #0d1117; padding: 15px; border-radius: 10px; border: 1px solid #00D9FF; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- CONFIGURATIE ---
+# --- API KEY ---
 API_KEY = 'd5h3vm9r01qll3dlm2sgd5h3vm9r01qll3dlm2t0'
 
-def get_ema(series, period=20):
-    """Berekent de EMA zoals Pine Script (TradingView)"""
-    return series.ewm(span=period, adjust=False).mean()
-
-def fetch_data(symbol, res):
-    """Haalt kaarsdata op van Finnhub"""
-    url = f"https://finnhub.io/api/v1/candle?symbol={symbol}&resolution={res}&count=50&token={API_KEY}"
+def check_api():
+    """Test of de API-sleutel überhaupt werkt"""
+    test_url = f"https://finnhub.io/api/v1/quote?symbol=AAPL&token={API_KEY}"
     try:
-        r = requests.get(url)
+        r = requests.get(test_url, timeout=5)
+        if r.status_code == 429:
+            return "ERROR: Te veel verzoeken (Rate Limit). Wacht 1 minuut."
+        if r.status_code == 403:
+            return "ERROR: Ongeldige API Key."
+        return "OK"
+    except:
+        return "ERROR: Geen internetverbinding."
+
+def fetch_candles(symbol, res):
+    url = f"https://finnhub.io/api/v1/candle?symbol={symbol}&resolution={res}&count=30&token={API_KEY}"
+    try:
+        r = requests.get(url, timeout=7)
         data = r.json()
         if data.get('s') == 'ok':
             return pd.DataFrame({'close': data['c']})
+        return None
     except:
         return None
-    return None
 
-# --- UI HEADER ---
-st.title("⚡ SST AI QUANT ENGINE")
-st.subheader("Multi-Timeframe Trend Analysis (EMA 20)")
+# --- UI ---
+st.title("⚡ SST AI QUANT TERMINAL")
 
-# Input voor de gebruiker
-symbol_input = st.text_input("Voer symbolen in (gescheiden door komma's):", "AAPL, TSLA, NVDA, BTCUSDT")
-run_button = st.button("RUN ANALYSE")
+# Status check
+api_status = check_api()
+if api_status == "OK":
+    st.success("Verbinding met Finnhub: ✅ Actief")
+else:
+    st.error(f"Verbinding met Finnhub: ❌ {api_status}")
 
-if run_button:
-    symbols = [s.strip().upper() for s in symbol_input.split(',')]
+symbol_input = st.text_input("Symbolen:", "AAPL, TSLA, NVDA")
+
+if st.button("START ANALYSE"):
+    symbols = [s.strip().upper() for s in symbol_input.split(',') if s.strip()]
     resolutions = {'5M': '5', '15M': '15', '30M': '30', '1H': '60', '4H': '240', '1D': 'D'}
     
-    # Grid voor dashboards
-    cols = st.columns(len(symbols))
-    matrix_data = []
-
-    for idx, sym in enumerate(symbols):
-        with cols[idx % len(cols)]:
-            st.write(f"### {sym}")
-            results = []
-            
-            for label, res in resolutions.items():
-                df = fetch_data(sym, res)
-                
+    for sym in symbols:
+        st.write(f"### Analyseert: {sym}...")
+        cols = st.columns(6)
+        
+        # Haal data op met vertraging om blokkade te voorkomen
+        for i, (label, res_code) in enumerate(resolutions.items()):
+            df = fetch_candles(sym, res_code)
+            with cols[i]:
                 if df is not None:
-                    df['ema20'] = get_ema(df['close'], 20)
+                    # Pine Script EMA 20 berekening
+                    ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
                     last_c = df['close'].iloc[-1]
-                    last_e = df['ema20'].iloc[-1]
-                    trend = 1 if last_c > last_e else -1
+                    
+                    color = "#76FF03" if last_c > ema20 else "#FF1744"
+                    icon = "▲" if last_c > ema20 else "▼"
+                    st.markdown(f"**{label}**")
+                    st.markdown(f"<h1 style='color:{color};'>{icon}</h1>", unsafe_allow_html=True)
                 else:
-                    trend = 0 # Fout bij ophalen
-                
-                results.append(trend)
-                time.sleep(0.1) # Voorkom API blokkade
+                    st.warning("No Data")
+            time.sleep(0.3) # Verlengde pauze tegen blokkade
 
-            # Berekening Scores
-            bulls = results.count(1)
-            bears = results.count(-1)
-            strength = round(((bulls - bears) / 6) * 100)
-            conf = round((max(bulls, bears) / 6) * 100)
-
-            # Toon metrics
-            st.metric("Strength", f"{strength}%")
-            st.metric("Confidence", f"{conf}%")
-
-            # Detail tabel per symbool
-            res_df = pd.DataFrame({
-                'Timeframe': list(resolutions.keys()),
-                'Trend': ['▲ Bullish' if r==1 else '▼ Bearish' if r==-1 else '━ Geen Data' for r in results]
-            })
-            st.table(res_df)
-            
-            # Data voor de Matrix onderaan
-            matrix_data.append([sym] + results)
-
-    # --- MATRIX OVERZICHT ---
-    st.divider()
-    st.write("### 🔮 TREND PREDICTIONS MATRIX")
-    matrix_columns = ['SYMBOOL', '5M', '15M', '30M', '1H', '4H', '1D']
-    final_matrix = pd.DataFrame(matrix_data, columns=matrix_columns)
-    
-    # Styling voor de matrix
-    def color_trend(val):
-        if val == 1: return 'color: #76FF03'
-        if val == -1: return 'color: #FF1744'
-        return 'color: gray'
-
-    st.dataframe(final_matrix.style.applymap(color_trend, subset=matrix_columns[1:]))
-
-else:
-    st.info("Vul de symbolen in en klik op 'RUN ANALYSE' om de live data te laden.")
