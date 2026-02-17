@@ -1,79 +1,105 @@
-import requests
+import streamlit as st
 import pandas as pd
+import requests
 import time
+
+# --- PAGINA CONFIGURATIE ---
+st.set_page_config(page_title="SST AI QUANT TERMINAL", layout="wide")
+
+st.markdown("""
+    <style>
+    .main { background-color: #050816; color: white; }
+    .stMetric { background-color: #0d1117; padding: 15px; border-radius: 10px; border: 1px solid #00D9FF; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- CONFIGURATIE ---
 API_KEY = 'd5h3vm9r01qll3dlm2sgd5h3vm9r01qll3dlm2t0'
-SYMBOLS = ['AAPL', 'TSLA', 'NVDA']
-RESOLUTIONS = {
-    '5M': '5',
-    '15M': '15',
-    '30M': '30',
-    '1H': '60',
-    '4H': '240',
-    '1D': 'D'
-}
 
 def get_ema(series, period=20):
-    """Berekent de EMA op exact dezelfde wijze als TradingView (Pine Script)"""
+    """Berekent de EMA zoals Pine Script (TradingView)"""
     return series.ewm(span=period, adjust=False).mean()
 
-def fetch_candles(symbol, resolution):
+def fetch_data(symbol, res):
     """Haalt kaarsdata op van Finnhub"""
-    url = f"https://finnhub.io/api/v1/candle?symbol={symbol}&resolution={resolution}&count=50&token={API_KEY}"
+    url = f"https://finnhub.io/api/v1/candle?symbol={symbol}&resolution={res}&count=50&token={API_KEY}"
     try:
-        response = requests.get(url)
-        data = response.json()
+        r = requests.get(url)
+        data = r.json()
         if data.get('s') == 'ok':
-            return pd.DataFrame({
-                'close': data['c'],
-                'high': data['h'],
-                'low': data['l']
-            })
-    except Exception as e:
-        print(f"Fout bij ophalen {symbol} ({resolution}): {e}")
+            return pd.DataFrame({'close': data['c']})
+    except:
+        return None
     return None
 
-def analyze_trends():
-    print(f"{'='*40}")
-    print(f" SST AI QUANT ENGINE - LIVE ANALYSIS ")
-    print(f"{'='*40}\n")
+# --- UI HEADER ---
+st.title("⚡ SST AI QUANT ENGINE")
+st.subheader("Multi-Timeframe Trend Analysis (EMA 20)")
 
-    for symbol in SYMBOLS:
-        results = []
-        print(f"Analyseert {symbol}...")
-        
-        for label, res in RESOLUTIONS.items():
-            df = fetch_candles(symbol, res)
+# Input voor de gebruiker
+symbol_input = st.text_input("Voer symbolen in (gescheiden door komma's):", "AAPL, TSLA, NVDA, BTCUSDT")
+run_button = st.button("RUN ANALYSE")
+
+if run_button:
+    symbols = [s.strip().upper() for s in symbol_input.split(',')]
+    resolutions = {'5M': '5', '15M': '15', '30M': '30', '1H': '60', '4H': '240', '1D': 'D'}
+    
+    # Grid voor dashboards
+    cols = st.columns(len(symbols))
+    matrix_data = []
+
+    for idx, sym in enumerate(symbols):
+        with cols[idx % len(cols)]:
+            st.write(f"### {sym}")
+            results = []
             
-            if df is not None and not df.empty:
-                # Pine Script Logica: Prijs vs EMA20
-                df['ema20'] = get_ema(df['close'], 20)
+            for label, res in resolutions.items():
+                df = fetch_data(sym, res)
                 
-                last_close = df['close'].iloc[-1]
-                last_ema = df['ema20'].iloc[-1]
+                if df is not None:
+                    df['ema20'] = get_ema(df['close'], 20)
+                    last_c = df['close'].iloc[-1]
+                    last_e = df['ema20'].iloc[-1]
+                    trend = 1 if last_c > last_e else -1
+                else:
+                    trend = 0 # Fout bij ophalen
                 
-                # Trend bepaling
-                trend = 1 if last_close > last_ema else -1
                 results.append(trend)
-            else:
-                results.append(0)
+                time.sleep(0.1) # Voorkom API blokkade
+
+            # Berekening Scores
+            bulls = results.count(1)
+            bears = results.count(-1)
+            strength = round(((bulls - bears) / 6) * 100)
+            conf = round((max(bulls, bears) / 6) * 100)
+
+            # Toon metrics
+            st.metric("Strength", f"{strength}%")
+            st.metric("Confidence", f"{conf}%")
+
+            # Detail tabel per symbool
+            res_df = pd.DataFrame({
+                'Timeframe': list(resolutions.keys()),
+                'Trend': ['▲ Bullish' if r==1 else '▼ Bearish' if r==-1 else '━ Geen Data' for r in results]
+            })
+            st.table(res_df)
             
-            # Voorkom Rate Limiting
-            time.sleep(0.1)
+            # Data voor de Matrix onderaan
+            matrix_data.append([sym] + results)
 
-        # Bereken Strength & Confidence
-        bull_count = results.count(1)
-        bear_count = results.count(-1)
-        
-        strength = round(((bull_count - bear_count) / len(results)) * 100)
-        confidence = round((max(bull_count, bear_count) / len(results)) * 100)
+    # --- MATRIX OVERZICHT ---
+    st.divider()
+    st.write("### 🔮 TREND PREDICTIONS MATRIX")
+    matrix_columns = ['SYMBOOL', '5M', '15M', '30M', '1H', '4H', '1D']
+    final_matrix = pd.DataFrame(matrix_data, columns=matrix_columns)
+    
+    # Styling voor de matrix
+    def color_trend(val):
+        if val == 1: return 'color: #76FF03'
+        if val == -1: return 'color: #FF1744'
+        return 'color: gray'
 
-        # Output naar console
-        print(f"  > STRENGTH: {strength}%")
-        print(f"  > CONFIDENCE: {confidence}%")
-        print(f"  > TIMEFR.: {' '.join(['[▲]' if r==1 else '[▼]' if r==-1 else '[?]' for r in results])}")
-        print("-" * 30)
+    st.dataframe(final_matrix.style.applymap(color_trend, subset=matrix_columns[1:]))
 
-if __name__ == "__main__":
-    analyze_trends()
+else:
+    st.info("Vul de symbolen in en klik op 'RUN ANALYSE' om de live data te laden.")
