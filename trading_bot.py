@@ -3,127 +3,147 @@ import pandas as pd
 import yfinance as yf
 import time
 
-# --- CONFIGURATIE ---
-st.set_page_config(page_title="SST AI QUANT TERMINAL", layout="wide")
+# --- LAYOUT & STYLING ---
+st.set_page_config(page_title="SST SMART MONEY ENGINE", layout="wide")
 
-# Custom CSS voor de Quant Look
 st.markdown("""
     <style>
     .main { background-color: #050816; color: white; }
-    .stDataFrame { background-color: #0a0e27; border: 1px solid #00D9FF; }
-    [data-testid="stMetricValue"] { font-size: 1.8rem !important; color: #00D9FF; }
-    .trend-box {
+    .stDataFrame { border: 1px solid #00D9FF; }
+    .metric-card {
+        background: #0A0E27;
+        border: 1px solid #00D9FF;
+        padding: 15px;
+        border-radius: 10px;
         text-align: center;
-        padding: 8px;
-        border-radius: 5px;
-        background: #0d1117;
-        border: 1px solid #333;
     }
     </style>
     """, unsafe_allow_html=True)
 
-def calculate_pine_ema(series, period=20):
-    """
-    Exacte match met Pine Script ta.ema():
-    Maakt gebruik van de recursieve formule: EMA = alpha * close + (1 - alpha) * prev_ema
-    """
-    return series.ewm(span=period, adjust=False).mean()
+# --- CORE BEREKENINGEN (100% PINE MATCH) ---
+def get_pine_metrics(df):
+    """Berekent trend, momentum en volatiliteit exact volgens GainzAlgo PineScript"""
+    if len(df) < 30: return 0, 0
+    
+    # 1. Trend: Price > EMA20 AND Price > VWAP
+    ema20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+    # VWAP benadering (Typical Price * Volume)
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    vwap = (typical_price * df['Volume']).sum() / df['Volume'].sum()
+    
+    last_close = df['Close'].iloc[-1]
+    trend_val = 1 if (last_close > ema20 and last_close > vwap) else (-1 if (last_close < ema20 and last_close < vwap) else 0)
+    
+    # 2. Momentum: close - close[3]
+    mom = last_close - df['Close'].iloc[-4]
+    mom_score = 0.5 if mom > 0 else (-0.5 if mom < 0 else 0)
+    
+    # 3. Volatility: ATR(14) vs SMA(ATR(14), 20)
+    high_low = df['High'] - df['Low']
+    high_cp = abs(df['High'] - df['Close'].shift())
+    low_cp = abs(df['Low'] - df['Close'].shift())
+    tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    atr_avg = atr.rolling(20).mean()
+    
+    vol_score = 0.5 if atr.iloc[-1] > atr_avg.iloc[-1] else 0
+    
+    final_score = trend_val + mom_score + vol_score
+    return trend_val, final_score
 
 def fetch_data(symbol, interval):
     try:
-        ticker_sym = symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol
-        ticker = yf.Ticker(ticker_sym)
-        # We halen 100 kaarsen op om de EMA 'warm' te laten draaien voor accuratesse
-        df = ticker.history(period="1mo", interval=interval)
-        return df if not df.empty else None
-    except:
-        return None
+        ticker = yf.Ticker(symbol.replace("USDT", "-USD") if "USDT" in symbol else symbol)
+        # Haal genoeg data op voor SMA van ATR en EMA warm-up
+        df = ticker.history(period="60d" if interval == "1d" else "5d", interval=interval)
+        return df if len(df) > 30 else None
+    except: return None
 
-# --- UI HEADER ---
-st.title("⚡ SST AI QUANT ENGINE")
+# --- UI ---
+st.title("⚡ SST SMART MONEY TERMINAL v3.0")
 
-c1, c2 = st.columns([3, 1])
-with c1:
-    symbol_input = st.text_input("SYMBOLEN:", "AAPL, TSLA, NVDA, BTC-USD")
-with c2:
-    st.write("##")
-    run_btn = st.button("RUN ENGINE", use_container_width=True)
+symbol_input = st.text_input("SYMBOLEN:", "AAPL, TSLA, NVDA, BTC-USD")
+run_btn = st.button("RUN SMART ANALYSIS")
 
 if run_btn:
     symbols = [s.strip().upper() for s in symbol_input.split(',') if s.strip()]
-    intervals = {'5M':'5m', '15M':'15m', '30M':'30m', '1H':'60m', '4H':'90m', '1D':'1d'}
+    intervals = {'1M':'1m','5M':'5m', '15M':'15m', '30M':'30m', '1H':'60m', '4H':'90m', '1D':'1d'}
     
     matrix_rows = []
     
-    progress_bar = st.progress(0)
-    for idx, sym in enumerate(symbols):
+    for sym in symbols:
+        scores = []
         trends = []
-        current_price = 0
-        volume = 0
         
         for label, inv in intervals.items():
             df = fetch_data(sym, inv)
-            if df is not None and len(df) > 20:
-                # Pine Script berekening: Close > EMA20
-                ema_series = calculate_pine_ema(df['Close'], 20)
-                last_close = df['Close'].iloc[-1]
-                last_ema = ema_series.iloc[-1]
-                
-                trends.append(1 if last_close > last_ema else -1)
-                
-                if label == '1D':
-                    current_price = last_close
-                    volume = df['Volume'].iloc[-1]
+            if df is not None:
+                t_val, f_score = get_pine_metrics(df)
+                trends.append(t_val)
+                scores.append(f_score)
             else:
                 trends.append(0)
+                scores.append(0)
         
-        # Berekening Strength & Confidence
-        bulls = trends.count(1)
-        bears = trends.count(-1)
-        strength = round(((bulls - bears) / 6) * 100)
-        confidence = round((max(bulls, bears) / 6) * 100)
+        # PineScript Logica voor Strength & Confidence
+        # trend_strength_raw = som van trends over 7 timeframes
+        trend_strength_raw = sum(trends)
+        strength_pct = (trend_strength_raw / 7) * 100
         
-        # Kleurcode symbolen voor Matrix
-        t_icons = ["▲" if t == 1 else "▼" if t == -1 else "━" for t in trends]
+        # Confidence logic exact uit de PineCode
+        conf = 50.0
+        abs_raw = abs(trend_strength_raw)
+        if abs_raw >= 7: conf = 90.0
+        elif abs_raw >= 4: conf = 75.0
+        elif abs_raw >= 2: conf = 60.0
         
+        # Prijs & Volume (1D)
+        df_1d = fetch_data(sym, '1d')
+        price = df_1d['Close'].iloc[-1] if df_1d is not None else 0
+        vol = df_1d['Volume'].iloc[-1] if df_1d is not None else 0
+
+        # Matrix format
         matrix_rows.append({
             'SYM': sym,
-            'PRICE': f"{current_price:.2f}",
-            '5M': t_icons[0], '15M': t_icons[1], '30M': t_icons[2],
-            '1H': t_icons[3], '4H': t_icons[4], '1D': t_icons[5],
-            'STR': f"{strength}%",
-            'CONF': f"{confidence}%",
-            'VOL': f"{volume/1_000_000:.1f}M"
+            'PRICE': f"{price:.2f}",
+            '1M': "▲" if scores[0] > 0.5 else ("▼" if scores[0] < -0.5 else "━"),
+            '5M': "▲" if scores[1] > 0.5 else ("▼" if scores[1] < -0.5 else "━"),
+            '15M': "▲" if scores[2] > 0.5 else ("▼" if scores[2] < -0.5 else "━"),
+            '30M': "▲" if scores[3] > 0.5 else ("▼" if scores[3] < -0.5 else "━"),
+            '1H': "▲" if scores[4] > 0.5 else ("▼" if scores[4] < -0.5 else "━"),
+            '4H': "▲" if scores[5] > 0.5 else ("▼" if scores[5] < -0.5 else "━"),
+            '1D': "▲" if scores[6] > 0.5 else ("▼" if scores[6] < -0.5 else "━"),
+            'STR': f"{strength_pct:.0f}%",
+            'CONF': f"{conf:.0f}%",
+            'VOL': f"{vol/1000:.0f}K"
         })
-        progress_bar.progress((idx + 1) / len(symbols))
 
-    # --- MATRIX WEERGAVE ---
-    st.subheader("🔮 LIVE TREND PREDICTIONS MATRIX")
+    # --- WEERGAVE ---
+    st.subheader("🔮 SMART MONEY TREND MATRIX")
     df_matrix = pd.DataFrame(matrix_rows)
-
-    def style_trend(val):
-        if val == "▲": return 'color: #76FF03; text-align: center; font-weight: bold;'
-        if val == "▼": return 'color: #FF1744; text-align: center; font-weight: bold;'
-        return 'text-align: center; color: gray;'
+    
+    def color_pijltjes(val):
+        if val == "▲": return 'color: #76FF03; font-weight: bold; text-align: center;'
+        if val == "▼": return 'color: #FF1744; font-weight: bold; text-align: center;'
+        return 'color: #FFB627; text-align: center;'
 
     st.dataframe(
-        df_matrix.style.applymap(style_trend, subset=['5M','15M','30M','1H','4H','1D']),
-        use_container_width=True,
-        hide_index=True
+        df_matrix.style.applymap(color_pijltjes, subset=['1M','5M','15M','30M','1H','4H','1D']),
+        use_container_width=True, hide_index=True
     )
 
-    # --- VISUELE DETAILS ---
-    st.divider()
+    # Details per symbool
     for row in matrix_rows:
-        with st.expander(f"Detail Analyse: {row['SYM']} | Prijs: {row['PRICE']}"):
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Current Price", row['PRICE'])
-            col2.metric("Trend Strength", row['STR'])
-            col3.metric("Confidence", row['CONF'])
-            col4.metric("Vol (24h)", row['VOL'])
+        with st.expander(f"Smart Money Flow: {row['SYM']}"):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Strength", row['STR'])
+            c2.metric("Confidence", row['CONF'])
+            c3.metric("Price", row['PRICE'])
+            c4.metric("CVD / Vol", row['VOL'])
 
 else:
-    st.info("Systeem gereed. Voer symbolen in om de Pine Script engine te starten.")
+    st.info("Systeem staat klaar voor GainzAlgo v3.0 Analyse.")
+
 
 
 
