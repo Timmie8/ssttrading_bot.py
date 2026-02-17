@@ -1,0 +1,79 @@
+import requests
+import pandas as pd
+import time
+
+# --- CONFIGURATIE ---
+API_KEY = 'd5h3vm9r01qll3dlm2sgd5h3vm9r01qll3dlm2t0'
+SYMBOLS = ['AAPL', 'TSLA', 'NVDA']
+RESOLUTIONS = {
+    '5M': '5',
+    '15M': '15',
+    '30M': '30',
+    '1H': '60',
+    '4H': '240',
+    '1D': 'D'
+}
+
+def get_ema(series, period=20):
+    """Berekent de EMA op exact dezelfde wijze als TradingView (Pine Script)"""
+    return series.ewm(span=period, adjust=False).mean()
+
+def fetch_candles(symbol, resolution):
+    """Haalt kaarsdata op van Finnhub"""
+    url = f"https://finnhub.io/api/v1/candle?symbol={symbol}&resolution={resolution}&count=50&token={API_KEY}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data.get('s') == 'ok':
+            return pd.DataFrame({
+                'close': data['c'],
+                'high': data['h'],
+                'low': data['l']
+            })
+    except Exception as e:
+        print(f"Fout bij ophalen {symbol} ({resolution}): {e}")
+    return None
+
+def analyze_trends():
+    print(f"{'='*40}")
+    print(f" SST AI QUANT ENGINE - LIVE ANALYSIS ")
+    print(f"{'='*40}\n")
+
+    for symbol in SYMBOLS:
+        results = []
+        print(f"Analyseert {symbol}...")
+        
+        for label, res in RESOLUTIONS.items():
+            df = fetch_candles(symbol, res)
+            
+            if df is not None and not df.empty:
+                # Pine Script Logica: Prijs vs EMA20
+                df['ema20'] = get_ema(df['close'], 20)
+                
+                last_close = df['close'].iloc[-1]
+                last_ema = df['ema20'].iloc[-1]
+                
+                # Trend bepaling
+                trend = 1 if last_close > last_ema else -1
+                results.append(trend)
+            else:
+                results.append(0)
+            
+            # Voorkom Rate Limiting
+            time.sleep(0.1)
+
+        # Bereken Strength & Confidence
+        bull_count = results.count(1)
+        bear_count = results.count(-1)
+        
+        strength = round(((bull_count - bear_count) / len(results)) * 100)
+        confidence = round((max(bull_count, bear_count) / len(results)) * 100)
+
+        # Output naar console
+        print(f"  > STRENGTH: {strength}%")
+        print(f"  > CONFIDENCE: {confidence}%")
+        print(f"  > TIMEFR.: {' '.join(['[▲]' if r==1 else '[▼]' if r==-1 else '[?]' for r in results])}")
+        print("-" * 30)
+
+if __name__ == "__main__":
+    analyze_trends()
