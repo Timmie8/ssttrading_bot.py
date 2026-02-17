@@ -1,62 +1,65 @@
 import streamlit as st
 import pandas as pd
-import requests
+import yfinance as yf
 import time
 
-st.set_page_config(page_title="SST AI QUANT", layout="wide")
+st.set_page_config(page_title="SST AI QUANT V4", layout="wide")
 
-# --- API KEY ---
-API_KEY = 'd5h3vm9r01qll3dlm2sgd5h3vm9r01qll3dlm2t0'
+# --- CONFIGURATIE ---
+# Yahoo gebruikt andere codes voor timeframes
+YF_RES_MAP = {
+    '5M': '5m',
+    '15M': '15m',
+    '30M': '30m',
+    '1H': '60m',
+    '4H': '90m', # Yahoo heeft geen 4u, we gebruiken 90m of 1h
+    '1D': '1d'
+}
 
-def check_api():
-    """Test of de API-sleutel überhaupt werkt"""
-    test_url = f"https://finnhub.io/api/v1/quote?symbol=AAPL&token={API_KEY}"
+def fetch_yfinance_data(symbol, interval):
+    """Haalt data op via Yahoo Finance (Gratis & Geen Key)"""
     try:
-        r = requests.get(test_url, timeout=5)
-        if r.status_code == 429:
-            return "ERROR: Te veel verzoeken (Rate Limit). Wacht 1 minuut."
-        if r.status_code == 403:
-            return "ERROR: Ongeldige API Key."
-        return "OK"
-    except:
-        return "ERROR: Geen internetverbinding."
-
-def fetch_candles(symbol, res):
-    url = f"https://finnhub.io/api/v1/candle?symbol={symbol}&resolution={res}&count=30&token={API_KEY}"
-    try:
-        r = requests.get(url, timeout=7)
-        data = r.json()
-        if data.get('s') == 'ok':
-            return pd.DataFrame({'close': data['c']})
+        # Voor Yahoo moeten we soms de ticker aanpassen (bijv. BTC-USD ipv BTCUSDT)
+        ticker_sym = symbol
+        if "USDT" in symbol:
+            ticker_sym = symbol.replace("USDT", "-USD")
+            
+        ticker = yf.Ticker(ticker_sym)
+        # Haal genoeg data op voor de EMA 20
+        period = "5d" if interval in ['5m', '15m', '30m', '60m'] else "1mo"
+        df = ticker.history(period=period, interval=interval)
+        
+        if not df.empty:
+            return pd.DataFrame({'close': df['Close']})
+    except Exception as e:
         return None
-    except:
-        return None
+    return None
 
 # --- UI ---
-st.title("⚡ SST AI QUANT TERMINAL")
+st.title("⚡ SST AI QUANT - Yahoo Engine")
+st.write("Status: **Yahoo Finance Fallback Actief**")
 
-# Status check
-api_status = check_api()
-if api_status == "OK":
-    st.success("Verbinding met Finnhub: ✅ Actief")
-else:
-    st.error(f"Verbinding met Finnhub: ❌ {api_status}")
-
-symbol_input = st.text_input("Symbolen:", "AAPL, TSLA, NVDA")
+symbol_input = st.text_input("Symbolen (bijv. AAPL, TSLA, BTC-USD):", "AAPL, TSLA, NVDA")
 
 if st.button("START ANALYSE"):
     symbols = [s.strip().upper() for s in symbol_input.split(',') if s.strip()]
-    resolutions = {'5M': '5', '15M': '15', '30M': '30', '1H': '60', '4H': '240', '1D': 'D'}
     
     for sym in symbols:
-        st.write(f"### Analyseert: {sym}...")
+        st.divider()
+        st.subheader(f"Analyse: {sym}")
         cols = st.columns(6)
         
-        # Haal data op met vertraging om blokkade te voorkomen
-        for i, (label, res_code) in enumerate(resolutions.items()):
-            df = fetch_candles(sym, res_code)
+        results = []
+        labels = list(YF_RES_MAP.keys())
+        
+        for i, label in enumerate(labels):
+            interval = YF_RES_MAP[label]
+            
+            with st.spinner(f'Laden {label}...'):
+                df = fetch_yfinance_data(sym, interval)
+                
             with cols[i]:
-                if df is not None:
+                if df is not None and len(df) >= 20:
                     # Pine Script EMA 20 berekening
                     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
                     last_c = df['close'].iloc[-1]
@@ -64,8 +67,12 @@ if st.button("START ANALYSE"):
                     color = "#76FF03" if last_c > ema20 else "#FF1744"
                     icon = "▲" if last_c > ema20 else "▼"
                     st.markdown(f"**{label}**")
-                    st.markdown(f"<h1 style='color:{color};'>{icon}</h1>", unsafe_allow_html=True)
+                    st.markdown(f"<h1 style='color:{color}; margin:0;'>{icon}</h1>", unsafe_allow_html=True)
+                    st.caption(f"Price: {round(last_c, 2)}")
                 else:
-                    st.warning("No Data")
-            time.sleep(0.3) # Verlengde pauze tegen blokkade
+                    st.markdown(f"**{label}**")
+                    st.warning("⚠️")
+            
+            time.sleep(0.1) # Yahoo is erg snel en blokkeert niet snel
+
 
